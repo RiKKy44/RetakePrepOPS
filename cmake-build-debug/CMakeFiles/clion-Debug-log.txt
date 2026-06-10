@@ -1,1 +1,0 @@
-CMakeLists.txt not found in /home/kacper/Documents/OPS2/RetakePrep Select CMakeLists.txt
