@@ -35,6 +35,7 @@ typedef struct {
     pthread_cond_t cond;
     pthread_mutex_t shared_mutexes[MAX_N];
     pthread_mutex_t counter_mutex;
+    pthread_mutex_t shm_mutex;
 }shared_data_t;
 
 void usage(char* program_name)
@@ -58,7 +59,11 @@ void ms_sleep(unsigned int milli)
 }
 
 void child_work(int n, shared_data_t* shared_data) {
+    srand(getpid());
     int is_working = 1;
+    int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    int* shm_data = mmap(NULL, n*sizeof(int),PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
     //otwieramy semafor nazwany w kazdym dziecku
     sem_t* semaphore = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 10);
     sem_wait(semaphore);
@@ -74,7 +79,6 @@ void child_work(int n, shared_data_t* shared_data) {
                 printf("[%d] Such a comfortable house n. <%d>!\n", getpid(), i);
                 ms_sleep(300);
 
-
                 pthread_mutex_lock(&shared_data->counter_mutex);
 
                 shared_data->counter++;
@@ -83,6 +87,12 @@ void child_work(int n, shared_data_t* shared_data) {
 
                 pthread_cond_signal(&shared_data->cond);
 
+                if (rand() % 100 < 10) {
+                    pthread_mutex_lock(&shared_data->shm_mutex);
+                    printf("[%d] Time to break a wall in house <%d>!\n", getpid(), i);
+                    shm_data[i] = 1;
+                    pthread_mutex_unlock(&shared_data->shm_mutex);
+                }
                 pthread_mutex_unlock(&shared_data->shared_mutexes[i]);
                 is_working = 0;
                 break;
@@ -120,6 +130,22 @@ int main(int argc, char** argv)
     shared_data_t* shared_data = mmap(NULL, sizeof(shared_data_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     sem_unlink(SEMAPHORE_NAME);
 
+    shm_unlink(SHM_NAME);
+
+    int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    //nadajemy rozmiar pamieci dzielonej!!!!
+    ftruncate(shm_fd, n*sizeof(int));
+    //mapujemy to na pamiec wspolna
+
+    //WAZNE rm /dev/shm/ zeby usunac shared mem jesli zapomnimy zunlinkowac
+    int* shm_data = mmap(NULL, n*sizeof(int),PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    //deskryptor nie jest juz potrzebny
+    close(shm_fd);
+
+    for (int i =0;i<n;i++) {
+        shm_data[i] = 0;
+    }
+
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
@@ -128,6 +154,7 @@ int main(int argc, char** argv)
     pthread_condattr_init(&condattr);
     pthread_condattr_setpshared(&condattr, PTHREAD_PROCESS_SHARED);
     pthread_cond_init(&shared_data->cond, &condattr);
+    pthread_mutex_init(&shared_data->shm_mutex, &attr);
     for (int i =0; i< n; i++) {
         pthread_mutex_init(&shared_data->shared_mutexes[i], &attr);
     }
@@ -144,10 +171,14 @@ int main(int argc, char** argv)
     }
     //waitpid() - waiting for specific child, wait(NULL) waiting for any child z WNOHANG to nieblokujacy
     while (wait(NULL) > 0){}
-
-    //zwalnia pamiec z mmap!!!!!
+    for (int i =0;i<n;i++) {
+        printf("%d ", shm_data[i]);
+    }
+    //zwalnia pamiec z mmap(tylko ten proces odcina sie od pamieci)
     munmap(shared_data, sizeof(shared_data_t));
-
+    munmap(shm_data, n*sizeof(int));
+    //usuwa plik shm
+    shm_unlink(SHM_NAME);
 
     sem_unlink(SEMAPHORE_NAME);
     exit(EXIT_SUCCESS);
