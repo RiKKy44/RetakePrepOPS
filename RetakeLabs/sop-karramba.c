@@ -31,22 +31,37 @@ typedef struct {
 void child_work(char* board,shared_data_t* process_data, int n, int m,int startx, int starty) {
     int x = startx;
     int y = starty;
+    int fifo_fd = open(FIFO_NAME, O_RDONLY | O_NONBLOCK);
     ms_sleep(WAIT_N *100);
-    for (int i =0;i<STEP_COUNT;i++) {
-        pthread_mutex_lock(&process_data->map_mutex);
-        if (has_trail(board, x, y, n, m)!=0) {
-            set_char(board, x, y, n, m, ' ');
-        }
-        else {
-            set_char(board, x, y, n, m, '.');
-            printf("Carramba!\n");
-        }
-        char move = get_trail_move(board, x, y, n, m);
+    char move;
+    while (1) {
+        //read zwraca 0 kiedy proces piszacy zamknal polaczenie i nie wplyna nowe dane
+        ssize_t received_bytes = read(fifo_fd,&move,1);
 
-        move_pos(board, move, n,m, &x,&y);
-        pthread_mutex_unlock(&process_data->map_mutex);
-        ms_sleep(100);
+        if (received_bytes > 0) {
+            printf("Direction %c? Don't try these tricks on me, carramba!\n", move);
+
+            pthread_mutex_lock(&process_data->map_mutex);
+
+            if (has_trail(board, x, y, n, m) != 0) {
+                set_char(board, x, y, n, m, ' ');
+            } else {
+                set_char(board, x, y, n, m, '.');
+                printf("Carramba!\n");
+            }
+
+            char trail_move = get_trail_move(board, x, y, n, m);
+            move_pos(board, trail_move, n, m, &x, &y);
+
+            pthread_mutex_unlock(&process_data->map_mutex);
+
+            ms_sleep(100);
+        }
+        if (received_bytes==0) {
+            break;
+        }
     }
+    close(fifo_fd);
     exit(EXIT_SUCCESS);
 }
 int main(int argc, char** argv) {
@@ -56,6 +71,7 @@ int main(int argc, char** argv) {
     int n = atoi(argv[1]);
 
     int m = atoi(argv[2]);
+    mkfifo(FIFO_NAME, 0666);
 
     int fd = open(BOARD_FILE, O_CREAT | O_RDWR | O_TRUNC, 0666);
 
@@ -72,7 +88,6 @@ int main(int argc, char** argv) {
     int y = rand() % (m);
 
     shared_data_t* shared_data = mmap(NULL, sizeof(shared_data_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
@@ -82,6 +97,10 @@ int main(int argc, char** argv) {
     if (pid ==0) {
         child_work(board,shared_data,n,m,x,y);
     }
+    int fifo_fd = open(FIFO_NAME, O_WRONLY);
+
+    signal(SIGPIPE, SIG_IGN);
+
     for (int i =0;i<STEP_COUNT;i++) {
         pthread_mutex_lock(&shared_data->map_mutex);
         char move = get_random_move(board, x,y, n, m);
@@ -94,12 +113,22 @@ int main(int argc, char** argv) {
 
         pthread_mutex_unlock(&shared_data->map_mutex);
         ms_sleep(100);
+
+        char random_move = get_random_move(board, x, y, n, m);
+
+        write(fifo_fd,&random_move,1);
     }
+    close(fifo_fd);
 
     printf("Smok-Expedition completed!\n");
+
     wait(NULL);
+
     munmap(board, file_size);
+
     munmap(shared_data, sizeof(shared_data_t));
+    unlink(FIFO_NAME);
     exit(EXIT_SUCCESS);
+
 
 }
