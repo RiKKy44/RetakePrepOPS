@@ -31,36 +31,66 @@ typedef struct {
 void child_work(char* board,shared_data_t* process_data, int n, int m,int startx, int starty) {
     int x = startx;
     int y = starty;
-    int fifo_fd = open(FIFO_NAME, O_RDONLY | O_NONBLOCK);
+    int fifo_fd = open(FIFO_NAME, O_RDONLY);
     ms_sleep(WAIT_N *100);
+
+    int socket_fd = bind_tcp_socket(PORT, EPOLL_MAX_EVENTS);
+    //Tworzymy epoll zeby nasluchiwac na deskryptorze socketu ORAZ fifo
+    int epoll_fd = epoll_create1(0);
+    struct epoll_event event;
+    event.events = EPOLLIN;
+    event.data.fd = fifo_fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fifo_fd, &event);
+
+    event.events = EPOLLIN;
+    event.data.fd = socket_fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, socket_fd, &event);
+    struct epoll_event events[EPOLL_MAX_EVENTS];
     char move;
-    while (1) {
+    int keep_running = 1;
+    while (keep_running) {
         //read zwraca 0 kiedy proces piszacy zamknal polaczenie i nie wplyna nowe dane
-        ssize_t received_bytes = read(fifo_fd,&move,1);
 
-        if (received_bytes > 0) {
-            printf("Direction %c? Don't try these tricks on me, carramba!\n", move);
+        //epoll wait zasypia budzi sie jesli cos sie stanie na fifo lub sockecie
+        int nfds = epoll_wait(epoll_fd, events, EPOLL_MAX_EVENTS, -1);
 
-            pthread_mutex_lock(&process_data->map_mutex);
+        for (int i =0;i<nfds;i++) {
+            if (events[i].data.fd == fifo_fd) {
+                ssize_t received_bytes = read(fifo_fd, &move, 1);
+                if (received_bytes > 0) {
+                    printf("Direction %c? Don't try these tricks on me, carramba!\n", move);
 
-            if (has_trail(board, x, y, n, m) != 0) {
-                set_char(board, x, y, n, m, ' ');
-            } else {
-                set_char(board, x, y, n, m, '.');
-                printf("Carramba!\n");
+                    pthread_mutex_lock(&process_data->map_mutex);
+
+                    if (has_trail(board, x, y, n, m) != 0) {
+                        set_char(board, x, y, n, m, ' ');
+                    } else {
+                        set_char(board, x, y, n, m, '.');
+                        printf("Carramba!\n");
+                    }
+
+                    char trail_move = get_trail_move(board, x, y, n, m);
+                    move_pos(board, trail_move, n, m, &x, &y);
+
+                    pthread_mutex_unlock(&process_data->map_mutex);
+
+                    ms_sleep(100);
+                }
+                if (received_bytes==0) {
+                    keep_running = 0;
+                }
             }
+            else if (events[i].data.fd == socket_fd) {
+                //musimy wywolac accept zeby zaakceptowac polaczenie od klienta
+                int client_fd = add_new_client(socket_fd);
+                printf("Headquarters connected -- over!\n");
+                close(client_fd);
 
-            char trail_move = get_trail_move(board, x, y, n, m);
-            move_pos(board, trail_move, n, m, &x, &y);
-
-            pthread_mutex_unlock(&process_data->map_mutex);
-
-            ms_sleep(100);
-        }
-        if (received_bytes==0) {
-            break;
+            }
         }
     }
+    close(socket_fd);
+    close(epoll_fd);
     close(fifo_fd);
     exit(EXIT_SUCCESS);
 }
@@ -92,6 +122,7 @@ int main(int argc, char** argv) {
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
     pthread_mutex_init(&shared_data->map_mutex, &attr);
+    pthread_mutexattr_destroy(&attr);
     pid_t pid = fork();
 
     if (pid ==0) {
@@ -99,7 +130,7 @@ int main(int argc, char** argv) {
     }
     int fifo_fd = open(FIFO_NAME, O_WRONLY);
 
-    signal(SIGPIPE, SIG_IGN);
+    set_handler(SIG_IGN, SIGPIPE);
 
     for (int i =0;i<STEP_COUNT;i++) {
         pthread_mutex_lock(&shared_data->map_mutex);
