@@ -131,7 +131,6 @@ int main(int argc, char** argv)
     sem_unlink(SEMAPHORE_NAME);
 
     shm_unlink(SHM_NAME);
-
     int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
     //nadajemy rozmiar pamieci dzielonej!!!!
     ftruncate(shm_fd, n*sizeof(int));
