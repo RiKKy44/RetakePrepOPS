@@ -48,6 +48,7 @@ void child_work(char* board,shared_data_t* process_data, int n, int m,int startx
     struct epoll_event events[EPOLL_MAX_EVENTS];
     char move;
     int keep_running = 1;
+    int active_client_fd = -1;
     while (keep_running) {
         //read zwraca 0 kiedy proces piszacy zamknal polaczenie i nie wplyna nowe dane
 
@@ -82,12 +83,50 @@ void child_work(char* board,shared_data_t* process_data, int n, int m,int startx
             }
             else if (events[i].data.fd == socket_fd) {
                 //musimy wywolac accept zeby zaakceptowac polaczenie od klienta
-                int client_fd = add_new_client(socket_fd);
-                printf("Headquarters connected -- over!\n");
-                close(client_fd);
+                active_client_fd = add_new_client(socket_fd);
+                if (active_client_fd == -1) {
+                    printf("Headquarters connected -- over!\n");
+                    //dodajemy nowego clienta do epolla
 
+                    struct epoll_event client_event;
+                    client_event.events = EPOLLIN;
+                    client_event.data.fd = active_client_fd;
+
+                    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, active_client_fd, &client_event);
+                }
+                else {
+                    close(active_client_fd);
+                }
+            }
+            else if (events[i].data.fd == active_client_fd) {
+                char network_char;
+                ssize_t bytes_received = read(active_client_fd, &network_char, 1);
+
+                if (bytes_received>0) {
+                    if (network_char == 'W' || network_char == 'A' || network_char == 'S' || network_char == 'D') {
+                        printf("Message %c -- accepted!\n", network_char);
+
+                        pthread_mutex_lock(&process_data->map_mutex);
+                        set_char(board, x, y, n, m, '*');
+                        move_pos(board, network_char, n, m, &x, &y);
+
+                        pthread_mutex_unlock(&process_data->map_mutex);
+                    }
+                }
+                else if (bytes_received == 0) {
+
+                    //jesli klient sie rozlaczyl to usuwamy go z monitorowania epolla
+                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, active_client_fd, NULL);
+
+                    close(active_client_fd);
+
+                    active_client_fd = -1;
+                }
             }
         }
+    }
+    if (active_client_fd != -1) {
+        close(active_client_fd);
     }
     close(socket_fd);
     close(epoll_fd);
